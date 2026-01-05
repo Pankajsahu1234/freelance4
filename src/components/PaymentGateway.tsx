@@ -1,7 +1,6 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { ChevronRight, Banknote, Loader } from 'lucide-react';
-import axios from 'axios'; // npm install axios
 import CryptoJS from 'crypto-js'; // npm install crypto-js
 
 interface Product {
@@ -22,21 +21,19 @@ export default function PaymentGateway() {
   const { product, quantity, totalAmount } = location.state as LocationState;
 
   const MERCHANT_NAME = import.meta.env.VITE_MERCHANT_NAME || 'Mahaseth Mobile All Solution';
-  const TERMINAL_ID = import.meta.env.VITE_TERMINAL_ID || '2222610015419744'; // Use as merchant code if needed
+  const TERMINAL_ID = import.meta.env.VITE_TERMINAL_ID || '2222610015419744';
   const MERCHANT_ADDRESS = import.meta.env.VITE_MERCHANT_ADDRESS || 'Kshireshwarnath MC';
-  const KHALTI_MERCHANT_ID = import.meta.env.VITE_KHALTI_MERCHANT_ID || '';
-  const ESEWA_MERCHANT_CODE = import.meta.env.VITE_ESEWA_MERCHANT_CODE || TERMINAL_ID; // Fallback to TERMINAL_ID
-  const KHALTI_SECRET_KEY = import.meta.env.VITE_KHALTI_SECRET_KEY || '';
-  const ESEWA_SECRET_KEY = import.meta.env.VITE_ESEWA_SECRET_KEY || '';
+  
+  // FonePay credentials (get secret from FonePay merchant dashboard)
+  const FONEPAY_SECRET_KEY = import.meta.env.VITE_FONEPAY_SECRET_KEY || '';
 
-  // Test URLs - Switch to production later
-  const KHALTI_BASE_URL = 'https://a.khalti.com/api/v2/epayment/initiate/'; // Sandbox
-  const ESEWA_EPAY_URL = 'https://uat.esewa.com.np/api/epay/main/v2/form'; // UAT
+  // FonePay endpoint (use dev for testing; switch to live for production)
+  const FONEPAY_ENDPOINT = 'https://dev-clientapi.fonepay.com/api/merchantRequest'; // Sandbox; live: https://clientapi.fonepay.com/api/merchantRequest
 
   const [isLoading, setIsLoading] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedMethod, setSelectedMethod] = useState<string>('');
-  const esewaFormRef = useRef<HTMLFormElement>(null);
+  const fonepayFormRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -51,89 +48,50 @@ export default function PaymentGateway() {
 
   const getReturnUrl = () => {
     const baseUrl = window.location.origin;
-    return `${baseUrl}/`; // Change to /success or /failure routes
+    return `${baseUrl}/payment-success`; // Update to your success route; handle verification there
   };
 
-  const handleKhalti = async () => {
-    if (!KHALTI_SECRET_KEY || !KHALTI_MERCHANT_ID) {
-      alert('Khalti keys missing in .env');
+  const handleFonePay = () => {
+    if (!FONEPAY_SECRET_KEY) {
+      alert('FonePay secret key missing. Add VITE_FONEPAY_SECRET_KEY to .env (get from FonePay dashboard).');
       return;
     }
 
     setIsLoading(true);
-    setSelectedMethod('Khalti by IME');
+    setSelectedMethod('FonePay');
     setIsProcessing(true);
 
-    try {
-      const amountInPaisa = Math.round(totalAmount * 100);
-      const payload = {
-        amount: amountInPaisa,
-        purchase_order_id: `ORD-${Date.now()}`,
-        purchase_order_name: product.title,
-        customer_info: {
-          name: 'Customer',
-          email: 'customer@example.com',
-          phone: '98xxxxxxxx',
-        },
-        return_url: getReturnUrl(),
-        website_url: window.location.origin,
-      };
+    const prn = `PRN-${Date.now()}`; // Payment Reference Number
+    const amt = totalAmount.toFixed(2);
+    const crn = 'NPR'; // Currency
+    const dt = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
+    const r1 = encodeURIComponent(product.title.substring(0, 50)); // Remarks 1 (product name)
+    const r2 = encodeURIComponent(MERCHANT_NAME); // Remarks 2 (merchant name)
+    const ru = encodeURIComponent(getReturnUrl()); // Return URL
+    const pid = TERMINAL_ID; // Merchant ID (your terminal ID)
+    const md = 'P'; // Payment mode: P for normal payment
 
-      const response = await axios.post(KHALTI_BASE_URL, payload, {
-        headers: {
-          'Authorization': `Key ${KHALTI_SECRET_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
+    // Hash string: PID+MD+PRN+AMT+CRN+DT+R1+R2+RU
+    const hashString = `${pid}${md}${prn}${amt}${crn}${dt}${r1}${r2}${ru}`;
+    const hash = CryptoJS.HmacSHA512(hashString, FONEPAY_SECRET_KEY).toString(CryptoJS.enc.Hex).toUpperCase();
 
-      if (response.data.payment_url) {
-        window.location.href = response.data.payment_url; // Redirect to Khalti payment page (may open app if installed)
-      }
-    } catch (error) {
-      console.error(error);
-      alert('Khalti payment initiation failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleESewa = () => {
-    if (!ESEWA_SECRET_KEY || !ESEWA_MERCHANT_CODE) {
-      alert('eSewa keys missing in .env');
-      return;
-    }
-
-    setIsLoading(true);
-    setSelectedMethod('eSewa');
-    setIsProcessing(true);
-
-    const transactionUuid = `TXN-${Date.now()}`;
-    const amountStr = totalAmount.toFixed(2);
-    const signString = `total_amount=${amountStr},transaction_uuid=${transactionUuid},product_code=${ESEWA_MERCHANT_CODE}`;
-    const signature = CryptoJS.HmacSHA256(signString, ESEWA_SECRET_KEY).toString(CryptoJS.enc.Base64);
-
-    const form = esewaFormRef.current;
+    const form = fonepayFormRef.current;
     if (form) {
       form.innerHTML = '';
       form.method = 'POST';
-      form.action = ESEWA_EPAY_URL;
-      form.target = '_blank';
+      form.action = FONEPAY_ENDPOINT;
 
       const fields = {
-        amount: amountStr,
-        total_amount: amountStr,
-        transaction_uuid: transactionUuid,
-        product_code: ESEWA_MERCHANT_CODE,
-        success_url: getReturnUrl(),
-        failure_url: getReturnUrl(),
-        signed_field_names: 'total_amount,transaction_uuid,product_code',
-        signature: signature,
-        tax_amount: '0',
-        product_service_charge: '0',
-        product_delivery_charge: '0',
-        customer_firstname: 'Customer',
-        customer_email: 'customer@example.com',
-        customer_phone: '98xxxxxxxx',
+        PID: pid,
+        MD: md,
+        PRN: prn,
+        AMT: amt,
+        CRN: crn,
+        DT: dt,
+        R1: r1,
+        R2: r2,
+        RU: ru,
+        DV: hash, // Digital Verification (hash)
       };
 
       Object.entries(fields).forEach(([key, value]) => {
@@ -144,7 +102,7 @@ export default function PaymentGateway() {
         form.appendChild(input);
       });
 
-      form.submit(); // Redirect to eSewa payment page (may open app if installed)
+      form.submit(); // Redirects to FonePay, which allows wallet selection (Khalti, eSewa, IME, etc.) and opens app if installed
     }
 
     setTimeout(() => {
@@ -159,18 +117,11 @@ export default function PaymentGateway() {
 
   const paymentMethods = [
     {
-      id: 'khalti',
-      name: 'Khalti by IME',
-      subtitle: 'Mobile Wallet - Secure payment',
-      icon: 'https://khalti.s3.amazonaws.com/image/KHT.png',
-      action: handleKhalti,
-    },
-    {
-      id: 'esewa',
-      name: 'eSewa Mobile Wallet',
-      subtitle: 'eSewa - Secure payment',
-      icon: 'https://esewa.com.np/assets/esewa_og.png',
-      action: handleESewa,
+      id: 'fonepay',
+      name: 'FonePay (Universal Wallet)',
+      subtitle: 'Opens Khalti, eSewa, IME Pay, etc. - Enter PIN to pay',
+      icon: 'https://fonepay.com/assets/images/logo.svg', // FonePay logo
+      action: handleFonePay,
     },
     {
       id: 'cod',
@@ -189,7 +140,7 @@ export default function PaymentGateway() {
             <Loader className="w-12 h-12 text-orange-600 animate-spin" />
           </div>
           <h2 className="text-2xl font-bold mb-2">Redirecting to {selectedMethod}</h2>
-          <p className="text-gray-600 mb-4">Opening payment page. Complete payment there (app may open if installed).</p>
+          <p className="text-gray-600 mb-4">Opening payment page. Select your wallet (Khalti, eSewa, IME Pay, etc.) and enter PIN.</p>
           <p className="text-sm text-gray-500">Amount: Rs. {totalAmount}</p>
           <p className="text-sm text-gray-500 mt-2">Product: {product.title}</p>
           <button
@@ -208,7 +159,8 @@ export default function PaymentGateway() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
-      <form ref={esewaFormRef} style={{ display: 'none' }} />
+      {/* Hidden form for FonePay */}
+      <form ref={fonepayFormRef} style={{ display: 'none' }} />
 
       <div className="max-w-3xl mx-auto bg-white rounded-lg shadow">
         <div className="border-b px-6 py-4">
